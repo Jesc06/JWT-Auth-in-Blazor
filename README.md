@@ -1,299 +1,258 @@
-# JWT-Auth-in-Blazor
-*JWT Auth Configuration in Blazor*
+# 🔑 JWT Authentication in Blazor (Client-Side)
 
+This guide explains how to **connect Blazor WebAssembly** with a **JWT-secured ASP.NET Core Web API**.  
+Includes **token storage**, **refresh token handling**, and **authentication state management**. 🚀
 
-1. *Create base URL API in blazor client side*
+---
 
-   ```csharp
-    builder.Services.AddHttpClient("API", option =>
-    { 
-        option.BaseAddress = new Uri("https://localhost:7253");
-    } );
-   ```
-   *https://localhost:7253 is Web API localhost URL*
+## 1️⃣ Configure Base API URL
 
-<br>
-
-
-2. *Create LoginDTO & JwtTokenDTO*
-   
-   *LoginDTO*
-   ```csharp
-   using System;
-   using System.Collections.Generic;
-   using System.ComponentModel.DataAnnotations;
-   using System.Linq;
-   using System.Threading.Tasks;
-   
-   namespace RecordManagementSystemClientSide.DTO
-   {
-       public class LoginDTO
-       {
-           [EmailAddress(ErrorMessage = "Invalid email format")]
-           public string email { get; set; } 
-           
-           [Required(ErrorMessage = "Please input your password")]
-           public string password { get; set; }
-       }
-   }
-   ```
-
-      *JwtTokenDTO*
-   ```csharp
-   using System;
-   using System.Collections.Generic;
-   using System.Linq;
-   using System.Threading.Tasks;
-   
-   namespace RecordManagementSystemClientSide.DTO
-   {
-       public class JwtToken
-       {
-           public string Token { get; set; }
-           public string RefreshToken { get; set; }
-           public DateTime RefreshTokenExpiry { get; set; }
-           public int ExpiresIn { get; set; }
-       }
-   }
-   ```
-
-   
-
-
-<br>
-
-3. *Create a Services folder and create a AuthSerices.cs file*
-
-![Step 1](Services.png)
+Add the base address for your Web API in `Program.cs`:
 
 ```csharp
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
-using RecordManagementSystemClientSide.DTO;
-using System.Net.Http.Json;
-using Microsoft.JSInterop;
-using System.Net.Http.Headers;
-
-
-namespace RecordManagementSystemClientSide.Services
+builder.Services.AddHttpClient("API", option =>
 {
-    public class AuthService
+    option.BaseAddress = new Uri("https://localhost:7253");
+});
+```
+
+> 📝 Replace `https://localhost:7253` with your Web API URL.
+
+---
+
+## 2️⃣ Create DTOs
+
+### `LoginDTO.cs`
+
+```csharp
+using System.ComponentModel.DataAnnotations;
+
+namespace RecordManagementSystemClientSide.DTO;
+
+public class LoginDTO
+{
+    [EmailAddress(ErrorMessage = "Invalid email format")]
+    public string email { get; set; }
+
+    [Required(ErrorMessage = "Please input your password")]
+    public string password { get; set; }
+}
+```
+
+### `JwtToken.cs`
+
+```csharp
+namespace RecordManagementSystemClientSide.DTO;
+
+public class JwtToken
+{
+    public string Token { get; set; }
+    public string RefreshToken { get; set; }
+    public DateTime RefreshTokenExpiry { get; set; }
+    public int ExpiresIn { get; set; }
+}
+```
+
+---
+
+## 3️⃣ Create `AuthService`
+
+📂 **Create a `Services` folder** and add `AuthService.cs`:
+
+```csharp
+using System.Net.Http.Json;
+using System.Net.Http.Headers;
+using Microsoft.JSInterop;
+using RecordManagementSystemClientSide.DTO;
+
+namespace RecordManagementSystemClientSide.Services;
+
+public class AuthService
+{
+    private readonly HttpClient _httpClient;
+    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly IJSRuntime _jsRuntime;
+
+    public AuthService(HttpClient httpClient, IHttpClientFactory httpClientFactory, IJSRuntime jsRuntime)
     {
-        private readonly HttpClient _httpClient;
-        private readonly IHttpClientFactory _httpClientFactory;
-        private readonly IJSRuntime _jsRuntime;
-        public AuthService(HttpClient httpClient, IHttpClientFactory httpClientFactory, IJSRuntime jsRuntime)
-        {
-            _httpClient = httpClient;
-            _httpClientFactory = httpClientFactory;
-            _jsRuntime = jsRuntime;
-        }
+        _httpClient = httpClient;
+        _httpClientFactory = httpClientFactory;
+        _jsRuntime = jsRuntime;
+    }
 
-        public async Task<string> login(LoginDTO loginDto)
+    public async Task<string?> Login(LoginDTO loginDto)
+    {
+        var http = _httpClientFactory.CreateClient("API");
+        var response = await http.PostAsJsonAsync("api/LoginRegister/Login", loginDto);
+
+        if (!response.IsSuccessStatusCode) return null;
+
+        var result = await response.Content.ReadFromJsonAsync<JwtToken>();
+        if (result is null) return null;
+
+        await _jsRuntime.InvokeVoidAsync("localStorage.setItem", "authToken", result.Token);
+        await _jsRuntime.InvokeVoidAsync("localStorage.setItem", "refreshToken", result.RefreshToken);
+        await _jsRuntime.InvokeVoidAsync("localStorage.setItem", "tokenExpiry", DateTime.UtcNow.AddSeconds(result.ExpiresIn).ToString("o"));
+
+        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", result.Token);
+        return result.Token;
+    }
+
+    public async Task EnsureValidToken()
+    {
+        var expiryStr = await _jsRuntime.InvokeAsync<string>("localStorage.getItem", "tokenExpiry");
+        if (!DateTime.TryParse(expiryStr, out var expiry)) return;
+
+        if (DateTime.UtcNow >= expiry)
         {
+            var refreshToken = await _jsRuntime.InvokeAsync<string>("localStorage.getItem", "refreshToken");
+            if (string.IsNullOrWhiteSpace(refreshToken)) return;
+
             var http = _httpClientFactory.CreateClient("API");
-            var response = await http.PostAsJsonAsync("api/LoginRegister/Login", loginDto);
+            var refreshResponse = await http.PostAsJsonAsync("api/LoginRegister/RefreshToken", new { RefreshToken = refreshToken });
 
-            if (response.IsSuccessStatusCode)
+            if (refreshResponse.IsSuccessStatusCode)
             {
-                var result = await response.Content.ReadFromJsonAsync<JwtToken>();
+                var result = await refreshResponse.Content.ReadFromJsonAsync<JwtToken>();
+                if (result is null) return;
 
                 await _jsRuntime.InvokeVoidAsync("localStorage.setItem", "authToken", result.Token);
                 await _jsRuntime.InvokeVoidAsync("localStorage.setItem", "refreshToken", result.RefreshToken);
                 await _jsRuntime.InvokeVoidAsync("localStorage.setItem", "tokenExpiry", DateTime.UtcNow.AddSeconds(result.ExpiresIn).ToString("o"));
 
                 _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", result.Token);
-                return result.Token;
             }
-            return null;
-        }
-
-
-        public async Task EnsureValidToken()
-        {
-            var expiryStr = await _jsRuntime.InvokeAsync<string>("localStorage.getItem", "refreshToken");
-            if (!DateTime.TryParse(expiryStr, out var expiry)) return;
-            if (DateTime.UtcNow >= expiry)
+            else
             {
-                var refreshToken = await _jsRuntime.InvokeAsync<string>("localStorage.getItem", "refreshToken");
-                if (string.IsNullOrWhiteSpace(refreshToken)) return;
-
-                var http = _httpClientFactory.CreateClient("API");
-                var refreshResponse = await http.PostAsJsonAsync("api/LoginRegister/Refresh Token", new { RefreshToken = refreshToken });
-
-                if (refreshResponse.IsSuccessStatusCode)
-                {
-                    var result = await refreshResponse.Content.ReadFromJsonAsync<JwtToken>();
-                    await _jsRuntime.InvokeVoidAsync("localStorage.setItem", "authToken", result.Token);
-                    await _jsRuntime.InvokeVoidAsync("localStorage.setItem", "refreshToken", result.RefreshToken);
-                    await _jsRuntime.InvokeVoidAsync("localStorage.setItem", "tokenExpiry", DateTime.UtcNow.AddSeconds(result.ExpiresIn).ToString("o"));
-                    
-                    _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", result.Token);
-                }
-                else
-                {
-                    await Logout();
-                    
-                }
-
+                await Logout();
             }
         }
-        
+    }
 
-        public async Task Logout()
-        {
-            var http = _httpClientFactory.CreateClient("API");
-            await http.PostAsync("api/Account/Logout", null);
-            await _jsRuntime.InvokeVoidAsync("localStorage.removeItem", "authToken");
-        }
-
-
+    public async Task Logout()
+    {
+        var http = _httpClientFactory.CreateClient("API");
+        await http.PostAsync("api/Account/Logout", null);
+        await _jsRuntime.InvokeVoidAsync("localStorage.removeItem", "authToken");
+        await _jsRuntime.InvokeVoidAsync("localStorage.removeItem", "refreshToken");
+        await _jsRuntime.InvokeVoidAsync("localStorage.removeItem", "tokenExpiry");
     }
 }
 ```
 
-<br>
+---
 
-4. *Create CustomAuthProvider for handling authorization, Login, Logout*
+## 4️⃣ Create `CustomAuthProvider`
 
-   ```csharp
-   using System;
-   using System.Collections.Generic;
-   using System.Linq;
-   using System.Runtime.CompilerServices;
-   using System.Runtime.InteropServices.JavaScript;
-   using System.Security.Claims;
-   using System.Text.Json;
-   using System.Threading.Tasks;
-   using Microsoft.AspNetCore.Components.Authorization;
-   using Microsoft.JSInterop;
-   
-   namespace RecordManagementSystemClientSide.Security
-   {
-       public class CustomAuthProvider : AuthenticationStateProvider
-       {
-           private readonly IJSRuntime _jsRuntime;
-           public CustomAuthProvider(IJSRuntime jsRuntime)
-           {
-               _jsRuntime = jsRuntime;
-           }
-
-        public override async Task<AuthenticationState> GetAuthenticationStateAsync()
-        {
-            var token = await _jsRuntime.InvokeAsync<string>("localStorage.getItem", "authToken");
-
-            if (string.IsNullOrWhiteSpace(token))
-            {
-                return new AuthenticationState(new ClaimsPrincipal(new ClaimsIdentity()));
-            }
-
-            var claims = ParseClaimsFromJwt(token);
-            var identity = new ClaimsIdentity(claims, "Jwt");
-            var user = new ClaimsPrincipal(identity);
-            return new AuthenticationState(user);
-        }
-
-
-        public void NotifyUserAuthentication(string token)
-        {
-            var claims = ParseClaimsFromJwt(token);
-            var authenticatedUser = new ClaimsPrincipal(new ClaimsIdentity(claims, "Jwt"));
-            var authState = Task.FromResult(new AuthenticationState(authenticatedUser));
-            NotifyAuthenticationStateChanged(authState);
-        }
-
-        public void NotifyLogout()
-        {
-            var authState = Task.FromResult(new AuthenticationState(new ClaimsPrincipal(new ClaimsIdentity())));
-            NotifyAuthenticationStateChanged(authState);
-        }
-
-        private IEnumerable<Claim> ParseClaimsFromJwt(string jwt)
-        {
-            var payload = jwt.Split('.')[1];
-            var jsonBytes = ParseBase64WithoutPadding(payload);
-
-            var claims = new List<Claim>();
-            using var doc = JsonDocument.Parse(jsonBytes);
-            foreach (var kvp in doc.RootElement.EnumerateObject())
-            {
-                // Kung number, gawin string representation
-                if (kvp.Value.ValueKind == JsonValueKind.Number)
-                {
-                    claims.Add(new Claim(kvp.Name, kvp.Value.GetRawText()));
-                }
-                else
-                {
-                    claims.Add(new Claim(kvp.Name, kvp.Value.ToString()));
-                }
-            }
-
-            return claims;
-        }
-
-
-
-        private byte[] ParseBase64WithoutPadding(string base64)
-        {
-            switch (base64.Length % 4)
-            {
-                case 2: base64 += "=="; break;
-                case 3: base64 += "="; break;
-            }
-            return Convert.FromBase64String(base64);
-        }
-
-        
-        
-     }
-   }
-   ```
-
-5. *Actual Implementation in Login UI*
-  
-      ```csharp
-      @inject AuthenticationStateProvider authProvider
-      @inject AuthService authService
-      
-      @code{
-          LoginDTO loginDTO = new();
-      
-          protected override async Task OnInitializedAsync(){
-              await authService.EnsureValidToken();
-              var auth = await authProvider.GetAuthenticationStateAsync();
-              if(auth.User.Identity?.IsAuthenticated == true){
-                  nav.NavigateTo("/Tama");
-              }
-          }
-          
-          public async Task SuccessllyValid(){
-              var token = await authService.login(loginDTO);
-              if(!string.IsNullOrWhiteSpace(token)){
-                  ((CustomAuthProvider)authProvider).NotifyUserAuthentication(token);
-                  nav.NavigateTo("/Tama");
-              } 
-              else{
-                  nav.NavigateTo("/Mali");
-              }
-          }
-       
-      }
-
-
-
-      ```
-
-      <br>
-
-6 *Register Services & CustomAuthProvider in Program.cs*
+Handles user claims and authentication state:
 
 ```csharp
+using System.Security.Claims;
+using System.Text.Json;
+using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.JSInterop;
 
+namespace RecordManagementSystemClientSide.Security;
+
+public class CustomAuthProvider : AuthenticationStateProvider
+{
+    private readonly IJSRuntime _jsRuntime;
+
+    public CustomAuthProvider(IJSRuntime jsRuntime) => _jsRuntime = jsRuntime;
+
+    public override async Task<AuthenticationState> GetAuthenticationStateAsync()
+    {
+        var token = await _jsRuntime.InvokeAsync<string>("localStorage.getItem", "authToken");
+        if (string.IsNullOrWhiteSpace(token))
+            return new AuthenticationState(new ClaimsPrincipal(new ClaimsIdentity()));
+
+        var claims = ParseClaimsFromJwt(token);
+        var identity = new ClaimsIdentity(claims, "Jwt");
+        return new AuthenticationState(new ClaimsPrincipal(identity));
+    }
+
+    public void NotifyUserAuthentication(string token)
+    {
+        var claims = ParseClaimsFromJwt(token);
+        var authState = Task.FromResult(new AuthenticationState(new ClaimsPrincipal(new ClaimsIdentity(claims, "Jwt"))));
+        NotifyAuthenticationStateChanged(authState);
+    }
+
+    public void NotifyLogout()
+    {
+        var authState = Task.FromResult(new AuthenticationState(new ClaimsPrincipal(new ClaimsIdentity())));
+        NotifyAuthenticationStateChanged(authState);
+    }
+
+    private static IEnumerable<Claim> ParseClaimsFromJwt(string jwt)
+    {
+        var payload = jwt.Split('.')[1];
+        var jsonBytes = ParseBase64WithoutPadding(payload);
+
+        using var doc = JsonDocument.Parse(jsonBytes);
+        return doc.RootElement.EnumerateObject()
+            .Select(kvp => new Claim(kvp.Name,
+                kvp.Value.ValueKind == JsonValueKind.Number ? kvp.Value.GetRawText() : kvp.Value.ToString()));
+    }
+
+    private static byte[] ParseBase64WithoutPadding(string base64)
+    {
+        switch (base64.Length % 4)
+        {
+            case 2: base64 += "=="; break;
+            case 3: base64 += "="; break;
+        }
+        return Convert.FromBase64String(base64);
+    }
+}
+```
+
+---
+
+## 5️⃣ Use in Login Component
+
+```razor
+@inject AuthenticationStateProvider authProvider
+@inject AuthService authService
+@inject NavigationManager nav
+
+<LoginForm Model="loginDTO" OnValidSubmit="HandleLogin" />
+
+@code {
+    LoginDTO loginDTO = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await authService.EnsureValidToken();
+        var auth = await authProvider.GetAuthenticationStateAsync();
+        if (auth.User.Identity?.IsAuthenticated == true)
+            nav.NavigateTo("/Tama");
+    }
+
+    private async Task HandleLogin()
+    {
+        var token = await authService.Login(loginDTO);
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            ((CustomAuthProvider)authProvider).NotifyUserAuthentication(token);
+            nav.NavigateTo("/Tama");
+        }
+        else
+        {
+            nav.NavigateTo("/Mali");
+        }
+    }
+}
+```
+
+---
+
+## 6️⃣ Register Services in `Program.cs`
+
+```csharp
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<AuthenticationStateProvider, CustomAuthProvider>();
 builder.Services.AddAuthorizationCore();
-
 ```
-      
+
+✅ Your Blazor app is now connected to your API with **JWT + Refresh Token support**.
