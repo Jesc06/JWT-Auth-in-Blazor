@@ -1,5 +1,10 @@
 # 🔑 JWT Authentication in Blazor (Client-Side)
 
+**[Web API JWT Configuration](https://github.com/Jesc06/ASP.NET-Core-Empty-MVC-set-up.git)**  
+You can check out this repository for more info on how to configure JWT authentication in a Web API.
+
+---
+
 This guide explains how to **connect Blazor WebAssembly** with a **JWT-secured ASP.NET Core Web API**.  
 Includes **token storage**, **refresh token handling**, and **authentication state management**. 🚀
 
